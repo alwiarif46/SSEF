@@ -183,3 +183,22 @@ export function validateSpray(
 }
 
 export const isBlocked = (v: Violation[]) => v.some((x) => x.severity === 'block');
+
+/**
+ * Regulatory impact: when a catalogued molecule becomes banned/restricted/unregistered, every
+ * schedule entry that lists it is flagged, with the still-eligible alternatives from the same entry.
+ */
+export function regulatoryImpact(bundle: Pick<ReferenceBundle, 'chemicals' | 'recommendations' | 'stages'>) {
+  const idx = chemicalIndex(bundle);
+  const out: { recommendationId: string; stage: string; affected: { chemicalId: string; product: string; status: string; reason: string }[]; alternatives: string[] }[] = [];
+  for (const r of bundle.recommendations) {
+    const affected = r.options
+      .map((o) => idx.get(o.chemicalId))
+      .filter((c): c is Chemical => !!c && regulatoryViolations(c).some((v) => v.severity !== 'info'))
+      .map((c) => ({ chemicalId: c.id, product: c.product, status: c.status, reason: regulatoryViolations(c).map((v) => v.message).join(' ') }));
+    if (!affected.length) continue;
+    const alternatives = r.options.map((o) => o.chemicalId).filter((id) => !affected.some((a) => a.chemicalId === id));
+    out.push({ recommendationId: r.id, stage: bundle.stages.find((s) => s.id === r.stageId)?.name ?? r.stageId, affected, alternatives });
+  }
+  return out;
+}

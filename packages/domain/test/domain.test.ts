@@ -255,3 +255,16 @@ describe('agronomy', () => {
     expect(dailySummaries(h)).toHaveLength(7);
   });
 });
+
+import { regulatoryImpact } from '../src/index.js';
+describe('regulatory impact', () => {
+  it('current schedule has no affected entries; a new ban flags entries and lists alternatives', () => {
+    expect(regulatoryImpact(B)).toEqual([]);
+    const banned = { ...B, chemicals: B.chemicals.map((c) => (c.id === 'captan-50wp' ? { ...c, status: 'banned' as const, statusReference: 'hypothetical' } : c)) };
+    const impact = regulatoryImpact(banned);
+    expect(impact.length).toBeGreaterThan(3);
+    const gt = impact.find((i) => i.recommendationId.startsWith('s02'))!;
+    expect(gt.alternatives).toContain('mancozeb-75wp');
+    expect(gt.alternatives).not.toContain('captan-50wp');
+  });
+});

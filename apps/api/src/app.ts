@@ -3,7 +3,7 @@ import cors from '@fastify/cors';
 import { z } from 'zod';
 import {
   SYNC_SCHEMA_VERSION, currentStage, planStage, validateSpray, diseaseRisks, wetnessProgress, ascosporeMaturity,
-  cumulativeDegreeDaysBase0, accumulateDD, dailySummaries, detectBiofix, istDay, nextStage,
+  cumulativeDegreeDaysBase0, accumulateDD, dailySummaries, detectBiofix, istDay, nextStage, regulatoryImpact,
 } from '@orchard/domain';
 import { authenticate, hashPassword, issueToken, requireRole, verifyPassword, who } from './auth.js';
 import { withTenant, withoutTenant, type Db } from './db.js';
@@ -114,6 +114,7 @@ export function buildApp(db: Db, opts: { logger?: boolean } = {}): FastifyInstan
       if (req.headers['if-none-match'] === `"${ref.etag}"`) return reply.code(304).send();
       return ref.bundle;
     });
+    r.get('/v1/reference/impact', async () => regulatoryImpact((await currentReference(db)).bundle));
     r.get('/v1/reference/versions', async () =>
       withoutTenant(db, async (tx) => (await tx.query('SELECT version_id, season, status, published_at FROM public.reference_bundles ORDER BY season DESC')).rows),
     );
