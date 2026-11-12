@@ -6,10 +6,11 @@
   "workspaces": [
     "packages/*",
     "apps/api",
+    "apps/web",
     "apps/mobile"
   ],
   "scripts": {
-    "build": "npm run build -w packages/reference -w packages/domain -w apps/api",
+    "build": "npm run build -w packages/reference -w packages/domain -w apps/api -w apps/web",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "test": "npm test --workspaces --if-present",
     "db:test": "npm run db:test -w apps/api"
