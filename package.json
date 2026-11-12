@@ -5,7 +5,8 @@
   "description": "Kashmir apple orchard management platform — offline-first, weather-driven, resistance-aware.",
   "workspaces": [
     "packages/*",
-    "apps/api"
+    "apps/api",
+    "apps/mobile"
   ],
   "scripts": {
     "build": "npm run build -w packages/reference -w packages/domain -w apps/api",

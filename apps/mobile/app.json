@@ -1,0 +1,41 @@
+{
+  "expo": {
+    "name": "Seb Orchard",
+    "slug": "seb-orchard",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": false,
+    "ios": {
+      "bundleIdentifier": "in.seborchard.app",
+      "supportsTablet": false,
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "Location is used to geotag scouting observations and orchard boundaries.",
+        "NSCameraUsageDescription": "The camera is used to photograph pests, diseases and pesticide invoices.",
+        "NSPhotoLibraryUsageDescription": "Photos are attached to scouting observations and inventory records."
+      }
+    },
+    "android": {
+      "package": "in.seborchard.app",
+      "permissions": [
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION",
+        "CAMERA",
+        "POST_NOTIFICATIONS",
+        "RECEIVE_BOOT_COMPLETED",
+        "VIBRATE"
+      ]
+    },
+    "plugins": [
+      "@morrowdigital/watermelondb-expo-plugin",
+      ["expo-build-properties", { "android": { "kotlinVersion": "1.9.24", "packagingOptions": { "pickFirst": ["**/libc++_shared.so"] } }, "ios": { "extraPods": [{ "name": "simdjson", "configurations": ["Debug", "Release"], "path": "../node_modules/@nozbe/simdjson", "modular_headers": true }] } }],
+      "expo-secure-store",
+      ["expo-location", { "locationWhenInUsePermission": "Location is used to geotag scouting observations." }],
+      ["expo-image-picker", { "cameraPermission": "The camera is used to photograph pests, diseases and invoices." }],
+      ["expo-notifications", { "color": "#2E7D32" }]
+    ],
+    "extra": {
+      "apiUrl": "http://10.0.2.2:8080"
+    }
+  }
+}
