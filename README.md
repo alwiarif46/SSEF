@@ -9,7 +9,7 @@ Multi-tenant, offline-first orchard management for apple growers in the Kashmir 
 | `packages/reference` | Season-versioned global reference data: SKUAST-K 2026 schedule (15 stages, 43 recommendations), 57-product chemical catalogue (CIBRC status, FRAC/IRAC, PHI = max(SKUAST, CIBRC)), pests and thresholds, 23 varieties, 8 rootstocks, frost critical temperatures, fertiliser tables, safety rules. |
 | `packages/domain` | Pure TypeScript engines, shared by the server and the device (so they work offline): tank scaler, compliance (de-facto PHI, label PHI, molecule rotation, FRAC caps, bloom, tank-mix rules, CIBRC gate, regulatory impact), revised Mills scab model with the Kashmir PAT ascospore model, codling-moth degree days (single sine, horizontal cutoff), alert generator (scab, protect-before-rain, frost, hail, spray window, heat, codling moth), stage planner (elevation-shifted windows, need-based thresholds, low-spray programme for Rvi6 varieties), harvest maturity, fertiliser splits, disease risk indices, sync merge rules, and the shared sync schema. |
 | `apps/api` | Fastify API on Postgres 16 with row-level security, the WatermelonDB sync endpoint, auth (JWT carrying tenant and role), the weather and alert worker, push notifications, and reports. |
-| `apps/mobile` | Expo / React Native client on WatermelonDB (offline-first). |
+| `apps/mobile` | Expo SDK 52 / React Native client on WatermelonDB (offline-first; on-device planner, sync, scouting, harvest, inventory, tasks). Needs a dev build (`npx expo prebuild && npx expo run:android`) — JSI SQLite does not run in Expo Go. |
 | `docs/` | API contract (`api.md`) and research sources plus open discrepancies (`research/sources.md`). |
 
 ## Run locally

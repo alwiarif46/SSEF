@@ -54,7 +54,7 @@ async function writeDaily(tx: Tx, tenantId: string, orchardId: string, hours: We
        ON CONFLICT (tenant_id, orchard_id, day) DO UPDATE SET min_c = EXCLUDED.min_c, max_c = EXCLUDED.max_c, mean_c = EXCLUDED.mean_c,
          precip_mm = EXCLUDED.precip_mm, mean_rh = EXCLUDED.mean_rh, is_forecast = EXCLUDED.is_forecast, hourly = EXCLUDED.hourly`,
       [hid('wd', orchardId, s.date), tenantId, orchardId, s.date, s.minC, s.maxC, Math.round(s.meanC * 10) / 10, Math.round(s.precipMm * 10) / 10, Math.round(s.meanRh),
-        hs.some((h) => h.isForecast), JSON.stringify(hs.map((h) => [h.time.slice(0, 13), h.tempC, h.rh, h.precipMm, h.weatherCode ?? null]))],
+        hs.some((h) => h.isForecast), JSON.stringify(hs.map((h) => ({ time: h.time, tempC: h.tempC, rh: h.rh, precipMm: h.precipMm, ...(h.weatherCode != null ? { weatherCode: h.weatherCode } : {}), ...(h.isForecast ? { isForecast: true } : {}) })))],
     );
   }
 }
