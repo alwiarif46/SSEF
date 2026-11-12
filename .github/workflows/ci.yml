@@ -1,0 +1,31 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:16
+        env: { POSTGRES_PASSWORD: postgres }
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      MIGRATION_DATABASE_URL: postgres://postgres:postgres@localhost:5432/orchard
+      TEST_ADMIN_URL: postgres://postgres:postgres@localhost:5432/postgres
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: sudo apt-get update && sudo apt-get install -y postgresql-client libtap-parser-sourcehandler-pgtap-perl
+      - run: npm ci
+      - run: npm run build
+      - run: npm run typecheck
+      - run: npm test
+      # Release-blocking: tenant isolation (RLS) policy tests.
+      - name: pgTAP RLS tests
+        run: |
+          psql postgres://postgres:postgres@localhost:5432/postgres -c 'CREATE DATABASE orchard'
+          docker exec $(docker ps -q --filter ancestor=postgres:16) bash -c 'apt-get update -qq && apt-get install -y -qq postgresql-16-pgtap'
+          node apps/api/dist/migrate.js
+          npm run db:test

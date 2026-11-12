@@ -1,0 +1,26 @@
+# Local development stack: Postgres 16 (+pgTAP), API, weather/alert worker.
+services:
+  db:
+    build: { context: ., dockerfile: infra/db.Dockerfile }
+    environment: { POSTGRES_PASSWORD: postgres, POSTGRES_DB: orchard }
+    ports: ['5432:5432']
+    volumes: ['pgdata:/var/lib/postgresql/data']
+  api:
+    build: { context: ., dockerfile: infra/api.Dockerfile }
+    environment:
+      DATABASE_URL: postgres://orchard_app:orchard_app@db:5432/orchard
+      MIGRATION_DATABASE_URL: postgres://postgres:postgres@db:5432/orchard
+      JWT_SECRET: ${JWT_SECRET:-dev-only-secret-change-me-dev-only-secret}
+    command: sh -c "node apps/api/dist/migrate.js && node apps/api/dist/server.js"
+    ports: ['8080:8080']
+    depends_on: [db]
+  worker:
+    build: { context: ., dockerfile: infra/api.Dockerfile }
+    environment:
+      DATABASE_URL: postgres://orchard_app:orchard_app@db:5432/orchard
+      WEATHER_PROVIDER: ${WEATHER_PROVIDER:-synthetic}
+      OPEN_METEO_URL: ${OPEN_METEO_URL:-http://open-meteo:8080}
+      PUSH_PROVIDER: ${PUSH_PROVIDER:-log}
+    command: node apps/api/dist/worker.js
+    depends_on: [api]
+volumes: { pgdata: {} }

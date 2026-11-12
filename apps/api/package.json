@@ -1,0 +1,29 @@
+{
+  "name": "@orchard/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/server.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "gen:ddl": "node scripts/gen-sync-ddl.mjs > migrations/002_sync_tables.sql",
+    "migrate": "node dist/migrate.js",
+    "start": "node dist/server.js",
+    "worker": "node dist/worker.js",
+    "test": "vitest run",
+    "db:test": "bash scripts/db-test.sh"
+  },
+  "dependencies": {
+    "@fastify/cors": "^10.0.1",
+    "@orchard/domain": "0.1.0",
+    "@orchard/reference": "0.1.0",
+    "fastify": "^5.1.0",
+    "jose": "^5.9.6",
+    "pg": "^8.13.1",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.11.10"
+  }
+}
