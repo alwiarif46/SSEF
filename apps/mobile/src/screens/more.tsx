@@ -1,12 +1,12 @@
 import React, { useEffect, useState } from 'react';
-import { Alert } from 'react-native';
+import { Alert, View } from 'react-native';
 import type { Role } from '@orchard/domain';
 import { GENERAL_INSTRUCTIONS_2026 } from '@orchard/reference';
-import { Badge, Button, Card, Field, H, P, Row, Screen, Select } from '../ui/kit';
+import { Badge, Button, Card, Field, H, P, Row, Screen, Select, Toggle } from '../ui/kit';
 import { useAuth } from '../state/auth';
 import { useReference } from '../state/reference';
 import { useT, type Lang } from '../i18n';
-import { api, getBaseUrl, setBaseUrl, type User } from '../api/client';
+import { api, getBaseUrl, request, setBaseUrl, type User } from '../api/client';
 import { synchronize } from '../sync/sync';
 import type { ScreenProps } from './nav';
 
@@ -75,6 +75,7 @@ export function SettingsScreen() {
         </Row>
       </Card>
       <Select<Lang> label="Language" value={lang} options={[{ value: 'en', label: 'English' }, { value: 'ur', label: 'اردو (Urdu — preview)' }]} onChange={setLang} />
+      <NotificationPrefsCard />
       <Card title="Reference data">
         <P>{bundle.version.source}</P>
         <Row>
@@ -142,5 +143,102 @@ export function UsersScreen() {
       )}
       {!can('owner') && <P muted>Only the owner can add team members (requires connection).</P>}
     </Screen>
+  );
+}
+
+const ALERT_LABELS: Record<string, string> = {
+  scab_infection: 'Scab infection',
+  protect_before_rain: 'Protect before rain',
+  codling_moth_dd: 'Codling moth (degree-days)',
+  frost: 'Frost',
+  hail: 'Hail',
+  heat_stress: 'Heat stress',
+  spray_window: 'Spray window',
+};
+type Severity = 'low' | 'medium' | 'high' | 'critical';
+interface NotificationPrefs { alertTypes: string[] | null; minSeverity: Severity; quietHoursStart: string | null; quietHoursEnd: string | null; smsFallback: boolean }
+interface PrefsResponse extends NotificationPrefs { options: { alertTypes: string[]; severities: Severity[] } }
+const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+/** Per-user alert notification preferences (server-side; needs a connection). */
+function NotificationPrefsCard() {
+  const [p, setP] = useState<NotificationPrefs | null>(null);
+  const [types, setTypes] = useState<string[]>(Object.keys(ALERT_LABELS));
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const load = () =>
+    request<PrefsResponse>('/v1/me/notifications')
+      .then(({ data: { options, ...prefs } }) => {
+        setP(prefs);
+        setTypes(options.alertTypes);
+        setError(null);
+      })
+      .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)));
+  useEffect(() => {
+    void load();
+  }, []);
+  if (!p)
+    return (
+      <Card title="Alert notifications">
+        <P muted>{error ? `Unavailable offline (${error}).` : 'Loading…'}</P>
+        {error ? <Button title="Retry" kind="secondary" onPress={() => void load()} /> : null}
+      </Card>
+    );
+  const on = new Set(p.alertTypes ?? types);
+  const flip = (t: string, v: boolean) => {
+    const n = new Set(on);
+    if (v) n.add(t);
+    else n.delete(t);
+    setP({ ...p, alertTypes: types.every((x) => n.has(x)) ? null : types.filter((x) => n.has(x)) });
+  };
+  const quiet = p.quietHoursStart != null;
+  const quietValid = !quiet || (HHMM.test(p.quietHoursStart ?? '') && HHMM.test(p.quietHoursEnd ?? ''));
+  return (
+    <Card title="Alert notifications">
+      {types.map((t) => (
+        <Toggle key={t} label={ALERT_LABELS[t] ?? t} value={on.has(t)} onChange={(v) => flip(t, v)} />
+      ))}
+      <Select<Severity>
+        label="Minimum severity"
+        value={p.minSeverity}
+        options={(['low', 'medium', 'high', 'critical'] as const).map((s) => ({ value: s, label: s[0]!.toUpperCase() + s.slice(1) }))}
+        onChange={(s) => setP({ ...p, minSeverity: s })}
+      />
+      <Toggle
+        label="Quiet hours (IST) — only critical alerts"
+        value={quiet}
+        onChange={(v) => setP(v ? { ...p, quietHoursStart: '21:00', quietHoursEnd: '06:00' } : { ...p, quietHoursStart: null, quietHoursEnd: null })}
+      />
+      {quiet ? (
+        <Row>
+          <View style={{ flex: 1 }}>
+            <Field label="From (HH:MM)" value={p.quietHoursStart ?? ''} onChangeText={(v) => setP({ ...p, quietHoursStart: v })} keyboardType="numbers-and-punctuation" error={HHMM.test(p.quietHoursStart ?? '') ? undefined : 'HH:MM'} />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Field label="To (HH:MM)" value={p.quietHoursEnd ?? ''} onChangeText={(v) => setP({ ...p, quietHoursEnd: v })} keyboardType="numbers-and-punctuation" error={HHMM.test(p.quietHoursEnd ?? '') ? undefined : 'HH:MM'} />
+          </View>
+        </Row>
+      ) : null}
+      <Toggle label="SMS critical alerts if push is unavailable" value={p.smsFallback} onChange={(v) => setP({ ...p, smsFallback: v })} />
+      {error ? <P muted>{error}</P> : null}
+      <Button
+        title="Save notification settings"
+        loading={busy}
+        disabled={!quietValid}
+        onPress={async () => {
+          setBusy(true);
+          try {
+            const r = await request<NotificationPrefs>('/v1/me/notifications', { method: 'PUT', json: p });
+            setP(r.data);
+            setError(null);
+            Alert.alert('Saved', 'Notification settings updated.');
+          } catch (e) {
+            setError(e instanceof Error ? e.message : String(e));
+          } finally {
+            setBusy(false);
+          }
+        }}
+      />
+    </Card>
   );
 }

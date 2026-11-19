@@ -4,6 +4,7 @@ import {
 import type { ReferenceBundle } from '@orchard/reference';
 import type { Tx } from '../db.js';
 import type { Principal } from '../auth.js';
+import { assertWritable, currentSyncViewer, loadScope, OutOfScope, scopePredicate } from '../lanes/accounts/scope.js';
 
 /** Re-send window so rows committed slightly out of clock order are never missed. */
 export const PULL_OVERLAP_MS = 10_000;
@@ -28,20 +29,39 @@ function toWire(t: TableDef, r: Row): WireRow {
   return out;
 }
 
-export async function pull(tx: Tx, lastPulledAt: number): Promise<{ changes: Changes; timestamp: number }> {
+/**
+ * Pull. `viewer` (default: the authenticated principal of the current /v1/sync
+ * request) enables worker orchard scoping: a worker with orchard assignments only
+ * receives rows of those orchards. When the viewer's assignment set changed since
+ * the checkpoint, the full visible set is re-sent and rows that left scope are
+ * reported as deleted so the device evicts them.
+ */
+export async function pull(tx: Tx, lastPulledAt: number, viewer: Principal | undefined = currentSyncViewer()): Promise<{ changes: Changes; timestamp: number }> {
   const now = Number((await tx.query<{ now: number }>('SELECT (extract(epoch from now()) * 1000)::bigint AS now')).rows[0]!.now);
   const since = lastPulledAt > 0 ? new Date(lastPulledAt - PULL_OVERLAP_MS) : null;
+  const scope = viewer ? await loadScope(tx, viewer) : null;
+  const rescope = !!since && !!scope?.changedAt && scope.changedAt > since;
   const changes: Changes = {};
   for (const t of SYNC_TABLES) {
     const cols = ['id', ...t.columns.map((c) => c.name), 'deleted_at'].map(ident).join(', ');
-    const { rows } = since
-      ? await tx.query(`SELECT ${cols} FROM public.${ident(t.name)} WHERE server_updated_at > $1 ORDER BY server_updated_at`, [since])
-      : await tx.query(`SELECT ${cols} FROM public.${ident(t.name)} WHERE deleted_at IS NULL ORDER BY server_updated_at`);
+    const params: unknown[] = [];
+    const bind = (v: unknown) => `$${params.push(v)}`;
+    const pred = scope?.restricted ? scopePredicate(t, scope, bind) : null;
+    const where = pred ? [pred] : [];
+    if (since && !rescope) where.push(`server_updated_at > ${bind(since)}`);
+    else if (since) where.push(`(deleted_at IS NULL OR server_updated_at > ${bind(since)})`);
+    else where.push('deleted_at IS NULL');
+    const { rows } = await tx.query(`SELECT ${cols} FROM public.${ident(t.name)} WHERE ${where.join(' AND ')} ORDER BY server_updated_at`, params);
     const tc: TableChanges = { created: [], updated: [], deleted: [] };
     for (const r of rows) {
       if (r.deleted_at) tc.deleted.push(String(r.id));
       else if (since) tc.updated.push(toWire(t, r));
       else tc.created.push(toWire(t, r));
+    }
+    if (rescope && scope?.restricted) {
+      const gp: unknown[] = [];
+      const out = scopePredicate(t, scope, (v) => `$${gp.push(v)}`);
+      if (out) for (const g of (await tx.query(`SELECT id FROM public.${ident(t.name)} WHERE deleted_at IS NULL AND NOT coalesce(${out}, false)`, gp)).rows) tc.deleted.push(String(g.id));
     }
     changes[t.name] = tc;
   }
@@ -174,6 +194,7 @@ async function recheckSpray(tx: Tx, row: Row, bundle: ReferenceBundle | undefine
 export async function push(tx: Tx, p: Principal, changes: Changes, lastPulledAt: number, bundle?: ReferenceBundle): Promise<PushResult> {
   const res: PushResult = { ok: true, rejected: [], conflicts: [], flags: [] };
   const since = new Date(lastPulledAt || 0);
+  const scope = await loadScope(tx, p);
   // Parents before children so composite FKs resolve within one push.
   const order = SYNC_TABLES.map((t) => t.name);
   const tables = Object.keys(changes ?? {}).sort((a, b) => order.indexOf(a) - order.indexOf(b));
@@ -192,6 +213,7 @@ export async function push(tx: Tx, p: Principal, changes: Changes, lastPulledAt:
       try {
         if (!/^[A-Za-z0-9_-]{8,64}$/.test(id)) throw new Reject('invalid id');
         const { rows: [existing] } = await tx.query(`SELECT * FROM public.${ident(name)} WHERE id = $1 FOR UPDATE`, [id]);
+        await assertWritable(tx, scope, t, existing, r);
         if (t.pullOnly) {
           if (!existing) throw new Reject('server-owned table');
           if (!roleAtLeast(p.role, t.roles.update)) throw new Reject('role not allowed');
@@ -230,7 +252,7 @@ export async function push(tx: Tx, p: Principal, changes: Changes, lastPulledAt:
         await tx.query('RELEASE SAVEPOINT row_sp');
       } catch (e) {
         await tx.query('ROLLBACK TO SAVEPOINT row_sp');
-        const reason = e instanceof Reject ? e.message : (e as { code?: string; message?: string }).code === '23503' ? 'parent record not found' : (e as Error).message;
+        const reason = e instanceof Reject || e instanceof OutOfScope ? e.message : (e as { code?: string; message?: string }).code === '23503' ? 'parent record not found' : (e as Error).message;
         res.rejected.push({ table: name, id, reason });
       }
     }
@@ -240,7 +262,8 @@ export async function push(tx: Tx, p: Principal, changes: Changes, lastPulledAt:
         if (t.pullOnly) throw new Reject('server-owned table');
         if (!roleAtLeast(p.role, t.roles.delete)) throw new Reject(`role ${p.role} cannot delete ${name}`);
         const hasLock = t.columns.some((c) => c.name === 'locked');
-        const { rows: [ex] } = await tx.query(`SELECT ${hasLock ? 'locked' : 'false AS locked'} FROM public.${ident(name)} WHERE id = $1`, [id]);
+        const { rows: [ex] } = await tx.query(`SELECT *${hasLock ? '' : ', false AS locked'} FROM public.${ident(name)} WHERE id = $1`, [id]);
+        await assertWritable(tx, scope, t, ex, undefined);
         if (ex?.locked) throw new Reject('locked records cannot be deleted; create a correction');
         await tx.query(`UPDATE public.${ident(name)} SET deleted_at = now() WHERE id = $1 AND deleted_at IS NULL`, [id]);
         await tx.query('RELEASE SAVEPOINT row_sp');
