@@ -53,6 +53,11 @@ npm run db:test
 
 `npm test` runs the domain unit tests, the API integration tests against a throwaway Postgres database, and a schema-drift check. `npm run db:test` runs the pgTAP row-level-security tests; these block a release.
 
+## Accounts, media and admin (lanes A–C)
+- **Accounts** (`docs/lanes/accounts.md`): SMS OTP login and password reset (`SMS_PROVIDER=log|msg91|twilio`), Postgres-backed login/OTP throttling, worker-to-orchard assignment (scoped sync), per-user notification preferences with quiet hours and SMS fallback for critical alerts. Behind a reverse proxy set `TRUST_PROXY`.
+- **Media & documents** (`docs/lanes/media.md`): photo/document storage (`MEDIA_DRIVER=local|s3`, S3/R2 compatible), scouting photos on web and mobile, per-block spray certificate PDF (`/v1/reports/spray-certificate.pdf`), CSV import with dry-run and templates (`/v1/import/:kind`).
+- **Platform admin** (`docs/lanes/admin.md`, `apps/admin`): separate admin auth (distinct JWT audience), tenant aggregates and plan/billing changes, worker run log, reference-data validate → diff → publish with agronomist sign-off, audit log. Create the first admin with `node apps/api/dist/lanes/admin/create-admin.js <email> <name> <password>`; run the console with `npm run dev -w apps/admin`.
+
 ## Multi-tenancy and security
 - One Postgres database with a shared schema. Every tenant table carries `tenant_id`, with `ENABLE` and `FORCE ROW LEVEL SECURITY`.
 - The policy is `tenant_id = app.current_tenant()`, and the tenant context is set per transaction with `set_config(..., true)`, which is safe under PgBouncer transaction mode.

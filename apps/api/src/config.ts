@@ -12,6 +12,8 @@ export const config = {
   openMeteoApiKey: process.env.OPEN_METEO_API_KEY,
   visualCrossingKey: process.env.VISUAL_CROSSING_KEY,
   pushProvider: (process.env.PUSH_PROVIDER ?? 'log') as 'expo' | 'log',
+  /** Behind a reverse proxy set TRUST_PROXY (true, a hop count, or a CIDR list) so per-IP limits see the real client IP. */
+  trustProxy: ((v) => (v == null || v === '' || v === 'false' ? false : v === 'true' ? true : /^\d+$/.test(v) ? Number(v) : v))(process.env.TRUST_PROXY) as boolean | number | string,
   workerIntervalMin: Number(process.env.WORKER_INTERVAL_MIN ?? 60),
 };
 

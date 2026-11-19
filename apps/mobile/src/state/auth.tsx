@@ -11,6 +11,8 @@ interface AuthState {
   signedIn: boolean;
   can: (min: Role) => boolean;
   login: (phone: string, password: string) => Promise<void>;
+  /** Adopt a token obtained elsewhere (e.g. OTP login). */
+  adoptSession: (token: string, user: User) => Promise<void>;
   signup: (b: { tenantName: string; name: string; phone: string; password: string }) => Promise<void>;
   logout: () => Promise<void>;
 }
@@ -45,6 +47,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     })();
   }, []);
 
+  const adopt = async (token: string, u: User) => {
+    await setToken(token);
+    const me = await api.me().catch(() => ({ user: u, tenant: undefined }));
+    await meta.set(USER_KEY, me);
+    setUser(me.user);
+    setTenant(me.tenant);
+  };
+
   const value: AuthState = {
     ready,
     user,
@@ -53,12 +63,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     can: (min) => !!user && roleAtLeast(user.role, min),
     login: async (phone, password) => {
       const r = await api.login({ phone, password });
-      await setToken(r.token);
-      const me = await api.me().catch(() => ({ user: r.user, tenant: undefined }));
-      await meta.set(USER_KEY, me);
-      setUser(me.user);
-      setTenant(me.tenant);
+      await adopt(r.token, r.user);
     },
+    adoptSession: (token, u) => adopt(token, u),
     signup: async (b) => {
       const r = await api.signup(b);
       await setToken(r.token);

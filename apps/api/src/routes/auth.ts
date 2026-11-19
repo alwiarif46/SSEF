@@ -8,6 +8,9 @@ import { installSyncScope } from '../lanes/accounts/scope.js';
 export const phone = z.string().regex(/^\+?[0-9]{10,13}$/, 'phone must be 10–13 digits');
 export const password = z.string().min(8).max(128);
 
+/** scrypt hash of a random throwaway password, used to equalise login timing for unknown phones. */
+const DUMMY_HASH = 'scrypt$c2ViLW9yY2hhcmQtZHVtbXk=$' + Buffer.alloc(64, 7).toString('base64');
+
 /** Public (unauthenticated) auth routes. Owned by the accounts lane. */
 export function registerAuthRoutes(app: FastifyInstance, db: Db) {
   // Worker orchard scoping for /v1/sync (root-level so it sees routes registered later).
@@ -34,7 +37,9 @@ export function registerAuthRoutes(app: FastifyInstance, db: Db) {
     const retry = await withoutTenant(db, (tx) => loginThrottle.retryAfter(tx, b.phone, req.ip));
     if (retry > 0) return reply.code(429).header('retry-after', String(retry)).send({ error: 'too many attempts, try later' });
     const u = await withoutTenant(db, async (tx) => (await tx.query('SELECT * FROM app.auth_lookup($1)', [b.phone])).rows[0]);
-    if (!u || !u.active || !(await verifyPassword(b.password, u.password_hash))) {
+    // Always run scrypt so response time does not reveal whether the phone is registered.
+    const ok = await verifyPassword(b.password, u?.password_hash ?? DUMMY_HASH);
+    if (!u || !u.active || !ok) {
       await withoutTenant(db, (tx) => loginThrottle.failed(tx, b.phone, req.ip));
       return reply.code(401).send({ error: 'invalid phone or password' });
     }

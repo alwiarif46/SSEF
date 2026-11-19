@@ -38,7 +38,10 @@ export async function seedReference(c: pg.Client, b: ReferenceBundle) {
   await c.query(
     `INSERT INTO public.reference_bundles (version_id, season, status, bundle, etag, published_at)
      VALUES ($1,$2,$3,$4,$5, CASE WHEN $3 IN ('published','under_review') THEN now() END)
-     ON CONFLICT (version_id) DO UPDATE SET status = EXCLUDED.status, bundle = EXCLUDED.bundle, etag = EXCLUDED.etag`,
+     ON CONFLICT (version_id) DO UPDATE SET status = EXCLUDED.status, bundle = EXCLUDED.bundle, etag = EXCLUDED.etag
+     -- Never overwrite a version an admin has published or superseded (see lanes/admin).
+     WHERE public.reference_bundles.status IN ('draft','under_review')
+       AND NOT EXISTS (SELECT 1 FROM public.reference_bundles p WHERE p.season = EXCLUDED.season AND p.status = 'published')`,
     [b.version.id, b.version.season, b.version.status, JSON.stringify(b), bundleEtag(b)],
   );
 }

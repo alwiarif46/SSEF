@@ -15,11 +15,12 @@ import { pull, push, type Changes } from './sync/sync.js';
 import { currentReference } from './reference.js';
 import { loadHours } from './worker.js';
 import { advisoryLinks } from './advisories.js';
+import { config } from './config.js';
 
 import { phone, password } from './routes/auth.js';
 
 export function buildApp(db: Db, opts: { logger?: boolean } = {}): FastifyInstance {
-  const app = Fastify({ logger: opts.logger ?? false, bodyLimit: 10 * 1024 * 1024 });
+  const app = Fastify({ logger: opts.logger ?? false, bodyLimit: 10 * 1024 * 1024, trustProxy: config.trustProxy });
   void app.register(cors, { origin: true });
 
   app.setErrorHandler((err, _req, reply) => {
