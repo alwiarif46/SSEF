@@ -4,6 +4,7 @@ import { synchronize as wmSync } from '@nozbe/watermelondb/sync';
 import { database } from '../db';
 import { collection, Q } from '../db/repo';
 import { getBaseUrl, getToken, request } from '../api/client';
+import { uploadPendingPhotos } from '../media/uploader';
 import { acceptedAppendOnly, countChanges, normalizePulled, preparePush, pullUrl, pushUrl, toRejectedIds, type Changes, type PushResponse } from './mapping';
 
 export interface SyncStatus {
@@ -64,8 +65,25 @@ export function synchronize(): Promise<void> {
     } finally {
       running = null;
     }
+    kickPhotoUploads();
   })();
   return running;
+}
+
+/**
+ * Upload captured photos in the background after each record sync. Record sync never waits on
+ * this; when uploads swap local URIs for media references, one more sync pushes those changes.
+ */
+let photoFollowUp = false;
+function kickPhotoUploads() {
+  void uploadPendingPhotos()
+    .then((changed) => {
+      if (changed > 0 && !photoFollowUp) {
+        photoFollowUp = true;
+        void synchronize().finally(() => { photoFollowUp = false; });
+      }
+    })
+    .catch(() => { /* status is reported via onPhotoUploadStatus; retried on the next sync */ });
 }
 
 /** Append-only rows accepted by the server are immutable: reflect `locked` locally without re-pushing. */

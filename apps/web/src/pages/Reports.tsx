@@ -16,6 +16,9 @@ export function Reports() {
   const [err, setErr] = useState<string | null>(null);
   useEffect(() => { api<Season>(`/v1/reports/season?season=${season}`).then((d) => { setData(d); setErr(null); }).catch((e) => setErr((e as Error).message)); }, [season]);
   const maxRev = Math.max(1, ...(data?.blocks.map((b) => b.revenue_inr) ?? [1]));
+  const certificate = (b: { id: string; name: string }) =>
+    downloadFile(`/v1/reports/spray-certificate.pdf?blockId=${encodeURIComponent(b.id)}&season=${season}`, `spray-certificate-${b.name.replace(/[^A-Za-z0-9_-]+/g, '-')}-${season}.pdf`)
+      .catch((e) => toast((e as Error).message));
   return (
     <>
       <PageHead title="Reports" sub="Season economics and the spray traceability log."
@@ -35,10 +38,11 @@ export function Reports() {
           <div className="grid g2">
             <Card title="By block">
               {data.blocks.length ? (
-                <div className="tbl-wrap"><table><thead><tr><th>Block</th><th className="num">Sprays</th><th className="num">Boxes</th><th>Revenue</th></tr></thead><tbody>
+                <div className="tbl-wrap"><table><thead><tr><th>Block</th><th className="num">Sprays</th><th className="num">Boxes</th><th>Revenue</th><th aria-label="Certificate" /></tr></thead><tbody>
                   {data.blocks.map((b) => (
                     <tr key={b.id}><td><b>{b.name}</b><div className="faint">{b.orchard}</div></td><td className="num">{b.sprays}</td><td className="num">{b.boxes}</td>
-                      <td><div style={{ display: 'grid', gridTemplateColumns: '1fr 90px', gap: 8, alignItems: 'center' }}><div style={{ height: 8, background: 'var(--surface-2)', borderRadius: 4 }}><div style={{ width: `${(b.revenue_inr / maxRev) * 100}%`, height: '100%', background: 'var(--series-1)', borderRadius: 4 }} /></div><span className="mono" style={{ textAlign: 'right' }}>{inr(b.revenue_inr)}</span></div></td></tr>
+                      <td><div style={{ display: 'grid', gridTemplateColumns: '1fr 90px', gap: 8, alignItems: 'center' }}><div style={{ height: 8, background: 'var(--surface-2)', borderRadius: 4 }}><div style={{ width: `${(b.revenue_inr / maxRev) * 100}%`, height: '100%', background: 'var(--series-1)', borderRadius: 4 }} /></div><span className="mono" style={{ textAlign: 'right' }}>{inr(b.revenue_inr)}</span></div></td>
+                      <td><button className="btn sm" title="Spray record & PHI certificate (PDF)" onClick={() => certificate(b)}>⬇ Certificate</button></td></tr>
                   ))}
                 </tbody></table></div>
               ) : <Empty>No blocks.</Empty>}
@@ -49,6 +53,9 @@ export function Reports() {
           </div>
           <Card title="Traceability log">
             <p className="muted" style={{ margin: 0 }}>The CSV lists every product applied: date, block, stage, active ingredients, FRAC/IRAC group, dose per 100 L, quantity, tank volume, batch and CIBRC registration number (from inventory), operator, compliance flags, override reasons and corrections — suitable for buyers, exporters and audits.</p>
+          </Card>
+          <Card title="Spray certificates">
+            <p className="muted" style={{ margin: 0 }}>Each block's <b>Certificate</b> is a PDF of the season's spray record — products, active ingredients, FRAC/IRAC groups, doses, batches and CIBRC registration numbers, operators and compliance flags — with the last spray date against the harvest date and a pre-harvest-interval verdict for every product. Corrected records are shown struck through as superseded.</p>
           </Card>
         </div>
       )}
