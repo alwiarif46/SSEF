@@ -7,10 +7,11 @@
     "packages/*",
     "apps/api",
     "apps/web",
+    "apps/admin",
     "apps/mobile"
   ],
   "scripts": {
-    "build": "npm run build -w packages/reference -w packages/domain -w apps/api -w apps/web",
+    "build": "npm run build -w packages/reference -w packages/domain -w apps/api -w apps/web -w apps/admin",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "test": "npm test --workspaces --if-present",
     "db:test": "npm run db:test -w apps/api"

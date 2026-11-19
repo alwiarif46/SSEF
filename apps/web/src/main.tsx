@@ -17,6 +17,7 @@ import { Reports } from './pages/Reports';
 import { Team } from './pages/Team';
 import { Settings } from './pages/Settings';
 import { TankCalc } from './pages/TankCalc';
+import { Import } from './pages/Import';
 
 const NAV: { to: string; label: string; icon: string; min?: 'manager' | 'owner'; sep?: string }[] = [
   { to: '/', label: 'Today', icon: '◐' },
@@ -29,6 +30,7 @@ const NAV: { to: string; label: string; icon: string; min?: 'manager' | 'owner';
   { to: '/chemicals', label: 'Chemicals', icon: '⚑' },
   { to: '/reports', label: 'Reports', icon: '▦', min: 'manager', sep: 'Business' },
   { to: '/team', label: 'Team', icon: '👥', min: 'manager' },
+  { to: '/import', label: 'Import', icon: '⇪', min: 'manager' },
   { to: '/settings', label: 'Settings & safety', icon: '⚙' },
 ];
 
@@ -103,6 +105,7 @@ function Protected() {
           <Route path="/reports" element={<Reports />} />
           <Route path="/team" element={<Team />} />
           <Route path="/settings" element={<Settings />} />
+          <Route path="/import" element={<Import />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </Shell>

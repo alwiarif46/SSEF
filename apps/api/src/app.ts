@@ -5,15 +5,18 @@ import {
   SYNC_SCHEMA_VERSION, currentStage, planStage, validateSpray, diseaseRisks, wetnessProgress, ascosporeMaturity,
   cumulativeDegreeDaysBase0, accumulateDD, dailySummaries, detectBiofix, istDay, nextStage, regulatoryImpact,
 } from '@orchard/domain';
-import { authenticate, hashPassword, issueToken, requireRole, verifyPassword, who } from './auth.js';
+import { authenticate, hashPassword, requireRole, who } from './auth.js';
+import { registerAuthRoutes } from './routes/auth.js';
+import { register as registerAccounts } from './lanes/accounts/index.js';
+import { register as registerMedia } from './lanes/media/index.js';
+import { register as registerAdmin } from './lanes/admin/index.js';
 import { withTenant, withoutTenant, type Db } from './db.js';
 import { pull, push, type Changes } from './sync/sync.js';
 import { currentReference } from './reference.js';
 import { loadHours } from './worker.js';
 import { advisoryLinks } from './advisories.js';
 
-const phone = z.string().regex(/^\+?[0-9]{10,13}$/, 'phone must be 10–13 digits');
-const password = z.string().min(8).max(128);
+import { phone, password } from './routes/auth.js';
 
 export function buildApp(db: Db, opts: { logger?: boolean } = {}): FastifyInstance {
   const app = Fastify({ logger: opts.logger ?? false, bodyLimit: 10 * 1024 * 1024 });
@@ -28,36 +31,13 @@ export function buildApp(db: Db, opts: { logger?: boolean } = {}): FastifyInstan
 
   app.get('/health', async () => ({ ok: true }));
 
-  // ── Auth ─────────────────────────────────────────────────────────────────
-  // Naive in-memory login throttle (per phone); production: put behind a shared rate limiter.
-  const attempts = new Map<string, { n: number; until: number }>();
+  // Public auth routes (owned by the accounts lane).
+  registerAuthRoutes(app, db);
 
-  app.post('/v1/auth/signup', async (req, reply) => {
-    const b = z.object({ tenantName: z.string().min(2).max(120), name: z.string().min(2).max(120), phone, password, district: z.string().max(60).optional() }).parse(req.body);
-    const hash = await hashPassword(b.password);
-    const r = await withoutTenant(db, async (tx) => {
-      if ((await tx.query('SELECT app.phone_taken($1) AS t', [b.phone])).rows[0].t) return null;
-      return (await tx.query('SELECT * FROM app.create_tenant_with_owner($1,$2,$3,$4,$5)', [b.tenantName, b.name, b.phone, hash, b.district ?? null])).rows[0];
-    });
-    if (!r) return reply.code(409).send({ error: 'phone already registered' });
-    const token = await issueToken({ userId: r.user_id, tenantId: r.tenant_id, role: 'owner' });
-    return reply.code(201).send({ token, user: { id: r.user_id, name: b.name, role: 'owner', phone: b.phone }, tenant: { id: r.tenant_id, name: b.tenantName } });
-  });
-
-  app.post('/v1/auth/login', async (req, reply) => {
-    const b = z.object({ phone, password: z.string().max(128) }).parse(req.body);
-    const a = attempts.get(b.phone);
-    if (a && a.until > Date.now()) return reply.code(429).send({ error: 'too many attempts, try later' });
-    const u = await withoutTenant(db, async (tx) => (await tx.query('SELECT * FROM app.auth_lookup($1)', [b.phone])).rows[0]);
-    if (!u || !u.active || !(await verifyPassword(b.password, u.password_hash))) {
-      const n = (a?.n ?? 0) + 1;
-      attempts.set(b.phone, { n, until: n >= 5 ? Date.now() + 15 * 60_000 : 0 });
-      return reply.code(401).send({ error: 'invalid phone or password' });
-    }
-    attempts.delete(b.phone);
-    const token = await issueToken({ userId: u.id, tenantId: u.tenant_id, role: u.role });
-    return { token, user: { id: u.id, name: u.name, role: u.role, phone: b.phone } };
-  });
+  // Feature lanes: each lane registers its own routes from its own module.
+  void app.register(async (r) => { await registerAccounts(r, db); });
+  void app.register(async (r) => { await registerMedia(r, db); });
+  void app.register(async (r) => { await registerAdmin(r, db); });
 
   // Everything below requires a token.
   app.register(async (r) => {
