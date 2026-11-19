@@ -8,6 +8,7 @@ import { providerFromConfig, type WeatherProvider } from './weather/providers.js
 import { loadBundle } from './reference.js';
 import { config } from './config.js';
 import { sendPending } from './push.js';
+import { workerRunFinish, workerRunStart } from './lanes/admin/worker-log.js';
 
 const hid = (prefix: string, ...parts: string[]) => `${prefix}-${createHash('sha1').update(parts.join('|')).digest('hex').slice(0, 30)}`;
 
@@ -129,7 +130,42 @@ export async function upsertAlerts(tx: Tx, tenantId: string, orchardId: string, 
   return inserted;
 }
 
+/**
+ * One weather/alert cycle, recorded in the worker run log (app.worker_run_start/finish).
+ * Per-orchard errors are collected, not thrown; a failure to enumerate targets is recorded and rethrown.
+ */
 export async function runCycle(db: Db, provider: WeatherProvider, bundle: ReferenceBundle, now = new Date()): Promise<CycleResult> {
+  return recordedCycle(db, provider, bundle, now);
+}
+
+/** runCycle plus an optional post-cycle step (push drain) whose count is recorded with the run. */
+export async function recordedCycle(db: Db, provider: WeatherProvider, bundle: ReferenceBundle, now = new Date(), after?: () => Promise<number>): Promise<CycleResult> {
+  const runId = await workerRunStart(db, provider.name).catch((e: Error) => {
+    console.error('worker run log unavailable:', e.message);
+    return null;
+  });
+  let res: CycleResult;
+  let pushed: number | null = null;
+  try {
+    res = await cycle(db, provider, bundle, now);
+  } catch (e) {
+    if (runId != null)
+      await workerRunFinish(db, runId, { orchards: 0, hours: 0, alerts: 0, newAlerts: 0, errors: [{ orchardId: '*', error: (e as Error).message }] }, null).catch(() => {});
+    throw e;
+  }
+  const errors = [...res.errors];
+  if (after) {
+    try {
+      pushed = await after();
+    } catch (e) {
+      errors.push({ orchardId: '*', error: `push: ${(e as Error).message}` });
+    }
+  }
+  if (runId != null) await workerRunFinish(db, runId, { ...res, errors }, pushed).catch((e: Error) => console.error('worker run log write failed:', e.message));
+  return res;
+}
+
+async function cycle(db: Db, provider: WeatherProvider, bundle: ReferenceBundle, now: Date): Promise<CycleResult> {
   const res: CycleResult = { orchards: 0, hours: 0, alerts: 0, newAlerts: 0, errors: [] };
   const targets = await withoutTenant(db, async (tx) => (await tx.query('SELECT * FROM app.weather_targets()')).rows);
   for (const o of targets) {
@@ -159,9 +195,9 @@ if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) {
   const db = createPool();
   const tick = async () => {
     const bundle = await loadBundle(db);
-    const r = await runCycle(db, providerFromConfig(), bundle);
-    const p = await sendPending(db);
-    console.log(new Date().toISOString(), JSON.stringify({ ...r, pushed: p }));
+    let pushed = 0;
+    const r = await recordedCycle(db, providerFromConfig(), bundle, new Date(), async () => (pushed = await sendPending(db)));
+    console.log(new Date().toISOString(), JSON.stringify({ ...r, pushed }));
   };
   await tick();
   if (!process.argv.includes('--once')) setInterval(() => void tick().catch(console.error), config.workerIntervalMin * 60_000);

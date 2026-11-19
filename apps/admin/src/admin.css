@@ -1,0 +1,25 @@
+/* Admin console additions on top of styles.css (copied from apps/web). */
+.side .brand small { color: var(--accent); font-weight: 600; letter-spacing: 0.02em; }
+.health { display: inline-flex; align-items: center; gap: 8px; font-weight: 600; }
+.health i { width: 10px; height: 10px; border-radius: 50%; display: inline-block; background: var(--text-3); }
+.health.ok i { background: var(--ok); }
+.health.degraded i, .health.running i { background: var(--warn); }
+.health.failing i, .health.stale i { background: var(--bad); }
+tr.clickable { cursor: pointer; }
+tr.clickable:hover td { background: var(--surface-2); }
+tr.detail td { background: var(--surface-2); }
+.code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.82rem; }
+textarea.code { min-height: 240px; white-space: pre; overflow-x: auto; }
+.err-list { margin: 0; padding-left: 18px; font-size: 0.85rem; color: var(--bad); max-height: 260px; overflow-y: auto; }
+.err-list li + li { margin-top: 2px; }
+.diff-add { color: var(--ok); }
+.diff-del { color: var(--bad); }
+.diff-chg { color: var(--warn); }
+.kv { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; font-size: 0.88rem; margin: 0; }
+.kv dt { color: var(--text-2); }
+.kv dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.steps { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 14px; }
+.steps span { padding: 4px 10px; border-radius: 999px; background: var(--surface-2); color: var(--text-3); font-size: 0.8rem; font-weight: 600; }
+.steps span.on { background: var(--brand); color: var(--brand-ink); }
+.steps span.done { background: var(--ok-bg); color: var(--ok); }
+pre.json { margin: 0; max-height: 260px; overflow: auto; background: var(--surface); border: 1px solid var(--border); padding: 10px; border-radius: 8px; white-space: pre-wrap; overflow-wrap: anywhere; }
