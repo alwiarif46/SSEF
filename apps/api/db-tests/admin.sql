@@ -1,6 +1,6 @@
 -- pgTAP: platform admin tables are reachable only through SECURITY DEFINER functions. Run: scripts/db-test.sh
 BEGIN;
-SELECT plan(31);
+SELECT plan(42);
 
 -- 1. Ownership, privileges, function hygiene.
 SELECT is((SELECT tableowner::text FROM pg_tables WHERE schemaname = 'public' AND tablename = 'platform_admins'), 'orchard_owner', 'platform_admins owned by orchard_owner');
@@ -71,6 +71,28 @@ SELECT throws_ok(
 SELECT is(
   (SELECT status FROM app.admin_store_reference('x-2030', 2030, 'draft', '{"version":{"id":"x-2030","season":2030,"status":"draft"},"stages":[],"recommendations":[],"chemicals":[]}', '0123456789abcdef0123456789abcdef')),
   'draft', 'admin_store_reference stores a draft');
+
+-- A stored version is never demoted; seasons and sign-off cannot be bypassed.
+SELECT is((SELECT status FROM app.admin_store_reference('x-2031', 2031, 'published', '{"version":{"id":"x-2031","season":2031,"status":"published","verifiedBy":"Dr. Test","verifiedAt":"2031-01-01T00:00:00Z"}}', '0123456789abcdef0123456789abcdef')),
+  'published', 'admin_store_reference publishes a signed bundle');
+SELECT throws_ok($$SELECT * FROM app.admin_store_reference('x-2031', 2031, 'draft', '{"version":{"id":"x-2031","season":2031,"status":"draft"}}', '0123456789abcdef0123456789abcdef')$$,
+  '23514', NULL, 'a draft cannot clobber a published version');
+SELECT throws_ok($$SELECT * FROM app.admin_store_reference('x-2031', 2031, 'under_review', '{"version":{"id":"x-2031","season":2031,"status":"under_review"}}', '0123456789abcdef0123456789abcdef')$$,
+  '23514', NULL, 'under_review cannot clobber a published version');
+SELECT is((SELECT bundle->'version'->>'verifiedBy' FROM public.reference_bundles WHERE version_id = 'x-2031'), 'Dr. Test', 'the published row is untouched');
+SELECT throws_ok($$SELECT * FROM app.admin_store_reference('x-2029', 2029, 'published', '{"version":{"id":"x-2029","season":2029,"status":"published","verifiedBy":"Dr. Test","verifiedAt":"2031-01-01T00:00:00Z"}}', '0123456789abcdef0123456789abcdef')$$,
+  '23514', NULL, 'a season older than the published one cannot be published');
+SELECT throws_ok($$SELECT * FROM app.admin_store_reference('x-2032', 2032, 'under_review', '{"version":{"id":"x-2032","season":2032,"status":"under_review"}}', '0123456789abcdef0123456789abcdef')$$,
+  '23514', NULL, 'an unsigned under_review bundle cannot outrank the published season');
+SELECT is((SELECT status FROM app.admin_store_reference('x-2031-rc', 2031, 'under_review', '{"version":{"id":"x-2031-rc","season":2031,"status":"under_review"}}', '0123456789abcdef0123456789abcdef')),
+  'under_review', 'under_review is allowed for the published season');
+SELECT throws_ok($$SELECT * FROM app.admin_store_reference('x-2031-rc', 2031, 'draft', '{"version":{"id":"x-2031-rc","season":2031,"status":"draft"}}', '0123456789abcdef0123456789abcdef')$$,
+  '23514', NULL, 'a draft cannot clobber an under_review version');
+SELECT is((SELECT superseded FROM app.admin_store_reference('x-2032', 2032, 'published', '{"version":{"id":"x-2032","season":2032,"status":"published","verifiedBy":"Dr. Test","verifiedAt":"2031-01-01T00:00:00Z"}}', '0123456789abcdef0123456789abcdef')),
+  ARRAY['x-2031'], 'publishing a newer season supersedes the previous published version');
+SELECT throws_ok($$SELECT * FROM app.admin_store_reference('x-2031', 2031, 'draft', '{"version":{"id":"x-2031","season":2031,"status":"draft"}}', '0123456789abcdef0123456789abcdef')$$,
+  '23514', NULL, 'a draft cannot clobber a superseded version');
+SELECT is((SELECT count(*)::int FROM public.reference_bundles WHERE status = 'published'), 1, 'at most one published version');
 
 RESET ROLE;
 SELECT throws_ok($$UPDATE public.admin_audit_log SET action = 'tampered'$$, '23514', NULL, 'audit log is append-only even for the owner');

@@ -10,7 +10,8 @@ import { issueToken, verifyToken } from '../src/auth.js';
 import { recordedCycle, runCycle } from '../src/worker.js';
 import { synthetic } from '../src/weather/providers.js';
 import { createAdmin } from '../src/lanes/admin/create-admin.js';
-import { issueAdminToken, verifyAdminToken } from '../src/lanes/admin/auth.js';
+import { issueAdminToken, loginBackoffMs, verifyAdminToken } from '../src/lanes/admin/auth.js';
+import { clearReferenceCache } from '../src/reference.js';
 import { checkBundle, diffBundles, prepareBundle } from '../src/lanes/admin/bundle.js';
 import { workerHealth, type WorkerRun } from '../src/lanes/admin/store.js';
 
@@ -105,6 +106,24 @@ describe('admin bootstrap and login', () => {
     // And at the verifier level.
     await expect(verifyAdminToken(tenantToken)).rejects.toThrow();
     await expect(verifyToken(adminToken)).rejects.toThrow();
+  });
+
+  it('throttles per email+IP without letting anyone lock a known admin out', async () => {
+    const login = (password: string, remoteAddress: string) =>
+      app.inject({ method: 'POST', url: '/v1/admin/login', payload: { email: 'ops@seborchard.in', password }, remoteAddress });
+    for (let i = 0; i < 8; i++) expect((await login('wrong-password', '10.9.0.1')).statusCode).toBe(401);
+    expect((await login('correct-horse-battery', '10.9.0.1')).statusCode).toBe(429);
+    // The real admin, elsewhere, still gets in (after a short backoff, never a lock).
+    expect((await login('correct-horse-battery', '10.9.0.2')).statusCode).toBe(200);
+    // Unknown emails take the same failure path, including the audit write.
+    const n = async () => (await su.query(`SELECT count(*)::int AS n FROM public.admin_audit_log WHERE action = 'admin.login_failed'`)).rows[0].n as number;
+    const before = await n();
+    const r = await app.inject({ method: 'POST', url: '/v1/admin/login', payload: { email: 'ghost@seborchard.in', password: 'whatever-pass' }, remoteAddress: '10.9.0.3' });
+    expect(r.statusCode).toBe(401);
+    expect(await n()).toBe(before + 1);
+    expect(loginBackoffMs(4)).toBe(0);
+    expect(loginBackoffMs(6)).toBe(200);
+    expect(loginBackoffMs(50)).toBe(5_000);
   });
 
   it('deactivated admins lose access immediately', async () => {
@@ -238,6 +257,76 @@ describe('reference publishing', () => {
     const audit = (await call('GET', '/v1/admin/audit?limit=500', adminToken)).body.filter((e: { action: string }) => e.action === 'reference.store');
     expect(audit).toHaveLength(3);
     expect(audit[0]).toMatchObject({ target: `skuastk-${season + 2}`, detail: { status: 'published', verifiedBy: 'Dr. Sheikh (SKUAST-K)', superseded: ['skuastk-2026'] } });
+  });
+
+  it('a stored version is never demoted: a draft cannot clobber the published bundle', async () => {
+    const live = `skuastk-${season + 2}`;
+    const before = (await call('GET', '/v1/reference/current', tenantToken)).headers.etag;
+    // The console's "start from a stored version" flow: load the live bundle, edit, store as draft.
+    const copy = (await call('GET', `/v1/admin/reference/${live}`, adminToken)).body as ReferenceBundle;
+    copy.recommendations[0]!.options[0]!.dosePer100L += 1;
+    const draft = await call('POST', '/v1/admin/reference/publish', adminToken, { bundle: copy, status: 'draft' });
+    expect(draft.status).toBe(409);
+    expect(draft.body.error).toMatch(/is published; use a new version id/);
+    expect((await call('POST', '/v1/admin/reference/publish', adminToken, { bundle: copy, status: 'under_review' })).status).toBe(409);
+    // A superseded version cannot be revived as a draft either.
+    const old = (await call('GET', '/v1/admin/reference/skuastk-2026', adminToken)).body as ReferenceBundle;
+    expect((await call('POST', '/v1/admin/reference/publish', adminToken, { bundle: old, status: 'draft' })).status).toBe(409);
+    clearReferenceCache();
+    const after = await call('GET', '/v1/reference/current', tenantToken);
+    expect(after.headers.etag).toBe(before);
+    expect(after.body.version).toMatchObject({ id: live, status: 'published' });
+
+    // Under review is allowed alongside the published season (served behind it), but then cannot be clobbered by a draft.
+    const rc = clone(copy);
+    rc.version = { ...rc.version, id: `${live}-rc1` };
+    expect((await call('POST', '/v1/admin/reference/publish', adminToken, { bundle: rc, status: 'under_review' })).status).toBe(201);
+    expect((await call('POST', '/v1/admin/reference/publish', adminToken, { bundle: rc, status: 'draft' })).status).toBe(409);
+    expect((await call('GET', '/v1/reference/current', tenantToken)).body.version.id).toBe(live);
+    // A revision stored under a new id is fine.
+    const rev = clone(copy);
+    rev.version = { ...rev.version, id: `${live}-draft1` };
+    expect((await call('POST', '/v1/admin/reference/publish', adminToken, { bundle: rev, status: 'draft' })).status).toBe(201);
+  });
+
+  it('sign-off is never inherited from the bundle; unsigned bundles cannot outrank the published one', async () => {
+    const live = `skuastk-${season + 2}`;
+    const signed = (await call('GET', `/v1/admin/reference/${live}`, adminToken)).body as ReferenceBundle;
+    expect(signed.version.verifiedBy).toBe('Dr. Sheikh (SKUAST-K)');
+    signed.recommendations[0]!.options[0]!.dosePer100L *= 3;
+    const r = await call('POST', '/v1/admin/reference/publish', adminToken, { bundle: signed, status: 'published' });
+    expect(r.status).toBe(422);
+    expect(r.body.error).toMatch(/verifiedBy/);
+    expect(prepareBundle(signed, 'published')).toMatchObject({ refused: expect.stringMatching(/verifiedBy/) });
+    // Drafts and under_review bundles carry no sign-off at all.
+    const d = prepareBundle(signed, 'draft', 'Someone');
+    if ('refused' in d) throw new Error(d.refused);
+    expect(d.bundle.version.verifiedBy).toBeUndefined();
+    expect(d.bundle.version.verifiedAt).toBeUndefined();
+    // Re-publishing with the publisher's own sign-off stamps a fresh verifiedAt.
+    const at = new Date('2030-03-01T10:00:00Z');
+    const p = prepareBundle(signed, 'published', 'Dr. Lone (SKUAST-K)', at);
+    if ('refused' in p) throw new Error(p.refused);
+    expect(p.bundle.version).toMatchObject({ verifiedBy: 'Dr. Lone (SKUAST-K)', verifiedAt: at.toISOString() });
+    const ok = await call('POST', '/v1/admin/reference/publish', adminToken, { bundle: signed, status: 'published', verifiedBy: 'Dr. Lone (SKUAST-K)' });
+    expect(ok.status).toBe(201);
+    const cur = await call('GET', '/v1/reference/current', tenantToken);
+    expect(cur.body.version.verifiedBy).toBe('Dr. Lone (SKUAST-K)');
+    expect(cur.body.version.verifiedAt).not.toBe(signed.version.verifiedAt);
+
+    // An unsigned under_review bundle for a newer season would be served first → refused.
+    const newer = clone(signed);
+    newer.version = { ...newer.version, id: `skuastk-${season + 3}`, season: season + 3, effectiveFrom: `${season + 3}-01-01`, effectiveTo: `${season + 3}-12-31` };
+    const ur = await call('POST', '/v1/admin/reference/publish', adminToken, { bundle: newer, status: 'under_review' });
+    expect(ur.status).toBe(409);
+    expect(ur.body.error).toMatch(/served ahead/);
+    // Publishing a season older than the published one is refused (it would leave two published rows).
+    const older = clone(signed);
+    older.version = { ...older.version, id: `skuastk-${season + 1}-r2`, season: season + 1, effectiveFrom: `${season + 1}-01-01`, effectiveTo: `${season + 1}-12-31` };
+    const op = await call('POST', '/v1/admin/reference/publish', adminToken, { bundle: older, status: 'published', verifiedBy: 'Dr. Lone (SKUAST-K)' });
+    expect(op.status).toBe(409);
+    expect(op.body.error).toMatch(/older than the published season/);
+    expect((await su.query(`SELECT count(*)::int AS n FROM public.reference_bundles WHERE status = 'published'`)).rows[0].n).toBe(1);
   });
 
   it('the store function enforces sign-off even when called directly', async () => {

@@ -220,20 +220,29 @@ export interface PreparedBundle { bundle: ReferenceBundle; etag: string; errors:
 
 /**
  * Stamp status / sign-off onto the bundle and decide whether it may be stored.
- * 'published' and 'under_review' bundles are served to growers, so they need zero errors;
- * 'published' also needs a named verifier. Drafts may be stored with errors (never served).
+ *
+ * 'published' and 'under_review' bundles are served to growers, so they need zero errors.
+ * 'published' also needs the sign-off of the person publishing it: `verifiedBy` must be passed
+ * explicitly and verifiedAt is always stamped fresh. A verifiedBy/verifiedAt already embedded in
+ * the bundle (e.g. one loaded from an earlier signed version and then edited) is never trusted,
+ * and is removed from drafts and under_review bundles, which are unverified by definition.
+ * Drafts may be stored with errors (never served).
  */
 export function prepareBundle(input: unknown, status: PublishStatus, verifiedBy?: string, now = new Date()): PreparedBundle | { refused: string; errors: string[] } {
   const check = checkBundle(input);
   if (!check.bundle) return { refused: 'bundle does not have the reference bundle shape', errors: check.errors };
-  const who = verifiedBy?.trim() || (status === 'published' ? check.bundle.version.verifiedBy?.trim() : undefined);
-  if (status === 'published' && !who) return { refused: 'publishing requires verifiedBy (agronomist sign-off)', errors: check.errors };
+  const who = status === 'published' ? verifiedBy?.trim() : undefined;
+  if (status === 'published' && (!who || who.length < 2)) return { refused: 'publishing requires verifiedBy (agronomist sign-off)', errors: check.errors };
   if (status !== 'draft' && check.errors.length) return { refused: `bundle has ${check.errors.length} validation error(s)`, errors: check.errors };
-  const version = { ...check.bundle.version, status };
-  if (who) Object.assign(version, { verifiedBy: who, verifiedAt: verifiedBy?.trim() ? now.toISOString() : version.verifiedAt ?? now.toISOString() });
+  const { verifiedBy: _staleBy, verifiedAt: _staleAt, ...rest } = check.bundle.version;
+  const version: ReferenceBundle['version'] = who ? { ...rest, status, verifiedBy: who, verifiedAt: now.toISOString() } : { ...rest, status };
   const bundle: ReferenceBundle = { ...check.bundle, version };
   return { bundle, etag: bundleEtag(bundle), errors: check.errors };
 }
+
+/** Raised by app.admin_store_reference when a store would break a publishing invariant. */
+export const isStoreRefusal = (e: unknown): e is Error & { code: string } =>
+  e instanceof Error && (e as { code?: unknown }).code === '23514';
 
 export interface StoredReference { version_id: string; season: number; status: string; etag: string; published_at: string | null; superseded: string[] }
 

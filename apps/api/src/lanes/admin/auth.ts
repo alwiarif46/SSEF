@@ -63,7 +63,7 @@ export const whoAdmin = (req: FastifyRequest): AdminPrincipal => {
   return req.admin;
 };
 
-/** In-memory failed-login throttle (per email and per client address). */
+/** In-memory failed-login counter with a fixed window; `max` failures per key block that key until the window ends. */
 export class LoginThrottle {
   private readonly hits = new Map<string, { n: number; until: number }>();
   constructor(private readonly max = 8, private readonly windowMs = 15 * 60_000) {}
@@ -85,4 +85,12 @@ export class LoginThrottle {
   reset(keys: string[]) {
     for (const k of keys) this.hits.delete(k);
   }
+  /** Failures recorded for `key` in the current window. */
+  failures(key: string, now = Date.now()): number {
+    const h = this.hits.get(key);
+    return h && h.until > now ? h.n : 0;
+  }
 }
+
+/** Soft per-email backoff: free for the first 4 failures, then 100 ms doubling per failure, capped at 5 s. */
+export const loginBackoffMs = (failures: number): number => (failures < 5 ? 0 : Math.min(100 * 2 ** (failures - 5), 5_000));

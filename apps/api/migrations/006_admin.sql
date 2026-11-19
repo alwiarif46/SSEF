@@ -169,12 +169,24 @@ END $$;
 
 -- ── Reference data publishing ───────────────────────────────────────────────────
 -- Content validation happens in the API (validateBundle); this function enforces the invariants
--- that must hold whoever calls it: consistent ids, an allowed status, agronomist sign-off for
--- 'published', and at most one published version (older/equal seasons are superseded).
+-- that must hold whoever calls it (API, CLI, or a direct orchard_app connection):
+--  * consistent ids, an allowed status, agronomist sign-off (verifiedBy + verifiedAt) for 'published';
+--  * a stored version is never demoted: a 'published' or 'superseded' row can only be overwritten by
+--    'published', and an 'under_review' row (servable) cannot be overwritten by a 'draft'.
+--    A draft revision of a live bundle needs a new version id;
+--  * a season older than the newest published season cannot be published;
+--  * an unsigned 'under_review' bundle can never outrank the signed published one
+--    (currentReference serves by season DESC): under_review is refused for a season newer than
+--    the newest published season;
+--  * at most one published version: publishing supersedes every other published row, and any
+--    under_review row for a newer season (left over from before anything was published).
 CREATE OR REPLACE FUNCTION app.admin_store_reference(p_version_id text, p_season int, p_status text, p_bundle jsonb, p_etag text)
 RETURNS TABLE (version_id text, season int, status text, etag text, published_at timestamptz, superseded text[])
 LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = public, pg_temp AS $$
-DECLARE sup text[] := '{}';
+DECLARE
+  sup text[] := '{}';
+  existing text;
+  newest_published int;
 BEGIN
   IF p_status NOT IN ('draft','under_review','published') THEN
     RAISE EXCEPTION 'status must be draft, under_review or published' USING ERRCODE = 'check_violation';
@@ -190,11 +202,35 @@ BEGIN
      OR p_bundle->'version'->>'status' IS DISTINCT FROM p_status THEN
     RAISE EXCEPTION 'bundle.version does not match version id / season / status' USING ERRCODE = 'check_violation';
   END IF;
-  IF p_status = 'published' AND coalesce(btrim(p_bundle->'version'->>'verifiedBy'), '') = '' THEN
-    RAISE EXCEPTION 'publishing requires version.verifiedBy (agronomist sign-off)' USING ERRCODE = 'check_violation';
+  IF p_status = 'published' AND (coalesce(btrim(p_bundle->'version'->>'verifiedBy'), '') = ''
+                                 OR coalesce(btrim(p_bundle->'version'->>'verifiedAt'), '') = '') THEN
+    RAISE EXCEPTION 'publishing requires version.verifiedBy and version.verifiedAt (agronomist sign-off)' USING ERRCODE = 'check_violation';
   END IF;
   IF p_etag !~ '^[0-9a-f]{16,64}$' THEN
     RAISE EXCEPTION 'invalid etag' USING ERRCODE = 'check_violation';
+  END IF;
+
+  -- Serialize reference writes so the invariants below are checked against a stable view.
+  LOCK TABLE public.reference_bundles IN SHARE ROW EXCLUSIVE MODE;
+
+  SELECT r.status INTO existing FROM public.reference_bundles r WHERE r.version_id = p_version_id;
+  IF existing IN ('published', 'superseded') AND p_status <> 'published' THEN
+    RAISE EXCEPTION 'version % is %; use a new version id for a % revision', p_version_id, existing, p_status
+      USING ERRCODE = 'check_violation';
+  END IF;
+  IF existing = 'under_review' AND p_status = 'draft' THEN
+    RAISE EXCEPTION 'version % is under review (served to growers); use a new version id for a draft', p_version_id
+      USING ERRCODE = 'check_violation';
+  END IF;
+
+  SELECT max(r.season) INTO newest_published FROM public.reference_bundles r
+  WHERE r.status = 'published' AND r.version_id <> p_version_id;
+  IF p_status = 'published' AND newest_published > p_season THEN
+    RAISE EXCEPTION 'season % is older than the published season %', p_season, newest_published USING ERRCODE = 'check_violation';
+  END IF;
+  IF p_status = 'under_review' AND newest_published < p_season THEN
+    RAISE EXCEPTION 'an unverified under_review bundle for season % would be served ahead of the published season %; publish it with sign-off instead',
+      p_season, newest_published USING ERRCODE = 'check_violation';
   END IF;
 
   INSERT INTO public.reference_bundles AS r (version_id, season, status, bundle, etag, published_at)
@@ -209,7 +245,8 @@ BEGIN
     WITH s AS (
       UPDATE public.reference_bundles r SET status = 'superseded',
         bundle = jsonb_set(r.bundle, '{version,status}', '"superseded"')
-      WHERE r.status = 'published' AND r.version_id <> p_version_id AND r.season <= p_season
+      WHERE r.version_id <> p_version_id
+        AND (r.status = 'published' OR (r.status = 'under_review' AND r.season > p_season))
       RETURNING r.version_id
     ) SELECT coalesce(array_agg(s.version_id ORDER BY s.version_id), '{}') INTO sup FROM s;
   END IF;

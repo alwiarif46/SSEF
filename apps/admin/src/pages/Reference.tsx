@@ -83,7 +83,7 @@ export function Reference() {
     setBusy('publish');
     setError(null);
     try {
-      const r = await adminApi.publish({ bundle, status: target, ...(verifiedBy.trim() ? { verifiedBy: verifiedBy.trim() } : {}) });
+      const r = await adminApi.publish({ bundle, status: target, ...(target === 'published' ? { verifiedBy: verifiedBy.trim() } : {}) });
       setPublished(r);
       setAttested(false);
       toast(`Stored ${r.version_id} as ${r.status.replace('_', ' ')}`);
@@ -179,9 +179,11 @@ export function Reference() {
                         <option value="published" disabled={!result.ok}>Published</option>
                       </select>
                     </Field>
-                    <Field label={target === 'published' ? 'Verified by (agronomist) *' : 'Verified by (optional)'}>
-                      <input value={verifiedBy} onChange={(e) => setVerifiedBy(e.target.value)} placeholder="Dr. Name, SKUAST-K" />
-                    </Field>
+                    {target === 'published' && (
+                      <Field label="Verified by (agronomist) *">
+                        <input value={verifiedBy} onChange={(e) => setVerifiedBy(e.target.value)} placeholder="Dr. Name, SKUAST-K" />
+                      </Field>
+                    )}
                   </div>
                   {target === 'published' && (
                     <label className="f check">
@@ -189,7 +191,8 @@ export function Reference() {
                       I confirm every stage, dose and product above was checked against the printed SKUAST-K edition.
                     </label>
                   )}
-                  {target === 'published' && <Note tone="warn">Publishing supersedes the currently published version for this and earlier seasons. Growers receive it on their next sync.</Note>}
+                  {target === 'published' && <Note tone="warn">Publishing supersedes the currently published version. Growers receive it on their next sync. A season older than the published one cannot be published.</Note>}
+                  {target !== 'published' && <Note tone="info">Drafts and under-review bundles carry no sign-off. A stored published, superseded or under-review version is never demoted: store a revision under a new version id.</Note>}
                   <div className="row">
                     <button className="btn primary" disabled={!canStore || busy === 'publish'} onClick={() => void publish()}>
                       {busy === 'publish' ? 'Storing…' : target === 'published' ? 'Publish' : `Store as ${target.replace('_', ' ')}`}

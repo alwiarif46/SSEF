@@ -1,12 +1,13 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { randomUUID } from 'node:crypto';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { hashPassword, verifyPassword } from '../../auth.js';
 import { config } from '../../config.js';
 import { withoutTenant, type Db } from '../../db.js';
 import { clearReferenceCache, currentReference } from '../../reference.js';
-import { LoginThrottle, authenticateAdmin, issueAdminToken, whoAdmin } from './auth.js';
-import { checkBundle, diffBundles, impactOf, prepareBundle, storeReference } from './bundle.js';
+import { LoginThrottle, authenticateAdmin, issueAdminToken, loginBackoffMs, whoAdmin } from './auth.js';
+import { checkBundle, diffBundles, impactOf, isStoreRefusal, prepareBundle, storeReference } from './bundle.js';
 import { listAudit, listTenants, listWorkerRuns, recordAudit, setTenantPlan, workerHealth } from './store.js';
 
 
@@ -16,22 +17,35 @@ const billingStatus = z.enum(['trial', 'active', 'past_due', 'cancelled']);
 
 /** Platform admin lane: admin auth, tenants, worker runs, reference publishing, audit log. */
 export async function register(app: FastifyInstance, db: Db): Promise<void> {
-  const throttle = new LoginThrottle();
+  // Brute-force protection without a lockout anyone can trigger:
+  //  * hard limit per (email, IP) pair and a looser one per IP — an attacker elsewhere cannot lock a known admin out;
+  //  * per-email exponential backoff (never a lock) to slow attempts spread across many IPs.
+  // Every key is counted whether or not the email exists, so throttling never reveals which admins exist.
+  const pairThrottle = new LoginThrottle(8);
+  const ipThrottle = new LoginThrottle(40);
+  const emailBackoff = new LoginThrottle(Number.POSITIVE_INFINITY);
   // Verified against when the email is unknown, so response timing does not reveal which admins exist.
   const dummyHash = hashPassword(randomUUID());
 
   app.post('/v1/admin/login', async (req, reply) => {
     const b = z.object({ email, password: z.string().min(1).max(200) }).parse(req.body);
-    const keys = [`e:${b.email}`, `ip:${req.ip}`];
-    if (throttle.blocked(keys)) return reply.code(429).send({ error: 'too many attempts, try again later' });
+    const pair = `p:${b.email}|${req.ip}`, ip = `ip:${req.ip}`, mail = `e:${b.email}`;
+    if (pairThrottle.blocked([pair]) || ipThrottle.blocked([ip])) return reply.code(429).send({ error: 'too many attempts, try again later' });
+    const wait = loginBackoffMs(emailBackoff.failures(mail));
+    if (wait) await sleep(wait);
     const row = await withoutTenant(db, async (tx) => (await tx.query('SELECT id, email, name, password_hash, active FROM app.admin_lookup($1)', [b.email])).rows[0]);
     const ok = await verifyPassword(b.password, row?.password_hash ?? (await dummyHash));
     if (!row || !ok || !row.active) {
-      throttle.fail(keys);
-      if (row) await withoutTenant(db, (tx) => recordAudit(tx, row.id, 'admin.login_failed', row.email, { ip: req.ip, reason: row.active ? 'bad_password' : 'inactive' }));
+      pairThrottle.fail([pair]);
+      ipThrottle.fail([ip]);
+      emailBackoff.fail([mail]);
+      // Same audit write for known and unknown emails, so the failure path costs the same either way.
+      const reason = !row ? 'unknown_email' : row.active ? 'bad_password' : 'inactive';
+      await withoutTenant(db, (tx) => recordAudit(tx, row?.id ?? null, 'admin.login_failed', b.email, { ip: req.ip, reason }));
       return reply.code(401).send({ error: 'invalid credentials' });
     }
-    throttle.reset(keys);
+    pairThrottle.reset([pair]);
+    emailBackoff.reset([mail]);
     await withoutTenant(db, (tx) => recordAudit(tx, row.id, 'admin.login', row.email, { ip: req.ip }));
     return { token: await issueAdminToken(row.id), admin: { id: row.id, email: row.email, name: row.name } };
   });
@@ -123,19 +137,27 @@ export async function register(app: FastifyInstance, db: Db): Promise<void> {
         status: z.enum(['draft', 'under_review', 'published']),
         verifiedBy: z.string().trim().min(2).max(200).optional(),
       }).strict().parse(req.body);
+      // Sign-off is the publisher's own, named in this request; one embedded in the bundle is ignored.
+      if (b.status === 'published' && !b.verifiedBy) return reply.code(422).send({ error: 'publishing requires verifiedBy (agronomist sign-off)', errors: [] });
       const prepared = prepareBundle(b.bundle, b.status, b.verifiedBy);
       if ('refused' in prepared) return reply.code(422).send({ error: prepared.refused, errors: prepared.errors });
       const current = await currentReference(db);
       const diff = diffBundles(current.bundle, prepared.bundle);
-      const stored = await withoutTenant(db, async (tx) => {
-        const s = await storeReference(tx, prepared);
-        await recordAudit(tx, a.adminId, 'reference.store', s.version_id, {
-          status: s.status, season: s.season, etag: s.etag, verifiedBy: prepared.bundle.version.verifiedBy ?? null,
-          superseded: s.superseded, warnings: prepared.errors.length, summary: diff.summary, doseChanges: diff.doseChanges.length,
-          against: diff.against.versionId,
+      let stored;
+      try {
+        stored = await withoutTenant(db, async (tx) => {
+          const s = await storeReference(tx, prepared);
+          await recordAudit(tx, a.adminId, 'reference.store', s.version_id, {
+            status: s.status, season: s.season, etag: s.etag, verifiedBy: prepared.bundle.version.verifiedBy ?? null,
+            superseded: s.superseded, warnings: prepared.errors.length, summary: diff.summary, doseChanges: diff.doseChanges.length,
+            against: diff.against.versionId,
+          });
+          return s;
         });
-        return s;
-      });
+      } catch (e) {
+        if (isStoreRefusal(e)) return reply.code(409).send({ error: e.message, errors: [] });
+        throw e;
+      }
       clearReferenceCache();
       return reply.code(201).send({ ...stored, warnings: prepared.errors });
     });
