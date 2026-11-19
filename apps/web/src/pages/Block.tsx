@@ -9,6 +9,8 @@ import { newId, today, useData, SaveError, type Row } from '../data';
 import { Badge, Card, Dialog, Empty, Field, Note, PageHead, Tabs, fmtDate, inr, useToast } from '../ui';
 import { SYSTEM_LABEL, chemName, live, pestName, planContext, stageFor, stageName, varietyName } from '../lib';
 import { BlockForm } from './Orchards';
+import { PhotoPicker, PhotoStrip, type PendingPhoto } from '../media/Photos';
+import { photoEntries, toRef, uploadMedia } from '../media/media';
 
 type Tab = 'plan' | 'sprays' | 'scouting' | 'phenology' | 'nutrients' | 'harvest';
 
@@ -235,13 +237,23 @@ function ScoutingTab({ block, stageId }: { block: Row; stageId?: string }) {
   const thr = /mite/.test(f.pest_id) && stageId ? MITE_THRESHOLDS[stageId] ?? pest?.actionThreshold : pest?.actionThreshold;
   const rows = live(tables.scouting_observations).filter((s) => s.block_id === block.id).sort((a, b) => String(b.observed_on).localeCompare(String(a.observed_on)));
   const gps = () => navigator.geolocation?.getCurrentPosition((p) => setF((x) => ({ ...x, lat: p.coords.latitude, lng: p.coords.longitude })));
+  const [pending, setPending] = useState<PendingPhoto[]>([]);
+  const [busy, setBusy] = useState(false);
   const submit = async (e: FormEvent) => {
     e.preventDefault();
+    setBusy(true);
+    setErr(null);
     try {
-      await save('scouting_observations', { id: newId(), block_id: block.id, observed_on: f.observed_on, pest_id: f.pest_id, metric: pest?.scoutingMetric ?? 'severity', value: f.value === '' ? null : Number(f.value), severity: f.severity === '' ? null : Number(f.severity), lat: f.lat === '' ? null : Number(f.lat), lng: f.lng === '' ? null : Number(f.lng), photos: [], observer_user_id: session.user()?.id ?? null, notes: f.notes || null }, { isNew: true });
-      toast('Observation saved');
+      const id = newId();
+      // Upload first (linked to the new record's id), then save the record with the references.
+      const photos = [];
+      for (const p of pending) photos.push(toRef(await uploadMedia(p.blob, p.name, { entityTable: 'scouting_observations', entityId: id })));
+      await save('scouting_observations', { id, block_id: block.id, observed_on: f.observed_on, pest_id: f.pest_id, metric: pest?.scoutingMetric ?? 'severity', value: f.value === '' ? null : Number(f.value), severity: f.severity === '' ? null : Number(f.severity), lat: f.lat === '' ? null : Number(f.lat), lng: f.lng === '' ? null : Number(f.lng), photos, observer_user_id: session.user()?.id ?? null, notes: f.notes || null }, { isNew: true });
+      toast(photos.length ? `Observation saved with ${photos.length} photo${photos.length > 1 ? 's' : ''}` : 'Observation saved');
+      pending.forEach((p) => URL.revokeObjectURL(p.preview));
+      setPending([]);
       setF({ ...f, value: '', severity: '', notes: '' });
-    } catch (x) { setErr((x as Error).message); }
+    } catch (x) { setErr((x as Error).message); } finally { setBusy(false); }
   };
   const over = thr != null && f.value !== '' && Number(f.value) > thr;
   return (
@@ -258,11 +270,12 @@ function ScoutingTab({ block, stageId }: { block: Row; stageId?: string }) {
           {thr != null && <Note tone={over ? 'bad' : 'info'}>{over ? <b>Above action threshold</b> : 'Action threshold'}: {thr} {pest?.thresholdUnit ?? ''}{pest?.thresholdNote ? ` — ${pest.thresholdNote}` : ''}</Note>}
           {pest?.favourableWeather && <div className="faint">Favoured by: {pest.favourableWeather}</div>}
           <Field label="Notes"><input value={f.notes} onChange={(e) => setF({ ...f, notes: e.target.value })} /></Field>
-          <div className="row"><button className="btn primary">Save</button><button type="button" className="btn" onClick={gps}>📍 {f.lat !== '' ? `${Number(f.lat).toFixed(4)}, ${Number(f.lng).toFixed(4)}` : 'Add GPS'}</button></div>
+          <PhotoPicker value={pending} onChange={setPending} disabled={busy} />
+          <div className="row"><button className="btn primary" disabled={busy}>{busy ? 'Saving…' : 'Save'}</button><button type="button" className="btn" onClick={gps}>📍 {f.lat !== '' ? `${Number(f.lat).toFixed(4)}, ${Number(f.lng).toFixed(4)}` : 'Add GPS'}</button></div>
         </form>
       </Card>
       <Card title="History">
-        {rows.length ? <div className="tbl-wrap"><table><thead><tr><th>Date</th><th>Pest</th><th className="num">Count</th><th className="num">Sev.</th></tr></thead><tbody>{rows.map((s) => <tr key={s.id}><td>{fmtDate(s.observed_on)}</td><td>{pestName(ref, String(s.pest_id))}{s.notes && <div className="faint">{s.notes}</div>}</td><td className="num">{s.value ?? '—'}</td><td className="num">{s.severity ?? '—'}</td></tr>)}</tbody></table></div> : <Empty>No observations yet.</Empty>}
+        {rows.length ? <div className="tbl-wrap"><table><thead><tr><th>Date</th><th>Pest</th><th className="num">Count</th><th className="num">Sev.</th></tr></thead><tbody>{rows.map((s) => <tr key={s.id}><td>{fmtDate(s.observed_on)}</td><td>{pestName(ref, String(s.pest_id))}{s.notes && <div className="faint">{s.notes}</div>}<PhotoStrip photos={photoEntries(s.photos)} /></td><td className="num">{s.value ?? '—'}</td><td className="num">{s.severity ?? '—'}</td></tr>)}</tbody></table></div> : <Empty>No observations yet.</Empty>}
       </Card>
     </div>
   );

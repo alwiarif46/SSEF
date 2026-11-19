@@ -1,0 +1,12 @@
+/* Media & documents lane styles (photos, import preview). */
+.media-strip { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.media-thumb { position: relative; width: 72px; height: 72px; border-radius: 8px; overflow: hidden; border: 1px solid var(--border); background: var(--surface-2); padding: 0; cursor: pointer; flex: none; }
+.media-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.media-missing { display: grid; place-items: center; width: 100%; height: 100%; color: var(--text-3); }
+.media-x { position: absolute; top: 2px; right: 2px; width: 20px; height: 20px; border-radius: 50%; border: 0; background: rgba(0, 0, 0, 0.6); color: #fff; font-size: 11px; cursor: pointer; line-height: 20px; padding: 0; }
+.media-full { display: block; max-width: min(80vw, 1000px); max-height: 75vh; border-radius: 8px; margin: 0 auto; }
+.import-table td { vertical-align: top; }
+.import-table tr.bad td { background: var(--bad-bg); }
+.import-table tr.warn td { background: var(--warn-bg); }
+.import-table .mono { font-size: 0.8rem; }
+.import-csv { width: 100%; min-height: 160px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.82rem; }

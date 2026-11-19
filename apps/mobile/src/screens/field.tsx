@@ -11,11 +11,17 @@ import { useAuth } from '../state/auth';
 import { fmtDate, isIsoDate, today } from '../lib/dates';
 import type { BlockRow, HarvestRow, OrchardRow, ScoutRow } from '../lib/types';
 import type { ScreenProps } from './nav';
+import { colors } from '../ui/theme';
+import { synchronize } from '../sync/sync';
+import { normalizePhotos, isLocalUri } from '../media/photos';
+import { retryFailedPhotos } from '../media/uploader';
+import { PhotoThumbs, PhotoUploadLine, usePhotoUploadStatus } from '../media/PhotoThumbs';
 
 export function FieldHomeScreen({ navigation }: ScreenProps<'Tabs'>) {
   const { rows: obs } = useTable<ScoutRow>('scouting_observations', [Q.sortBy('observed_on', Q.desc), Q.take(20)]);
   const { rows: harvest } = useTable<HarvestRow>('harvest_records', [Q.sortBy('picked_on', Q.desc), Q.take(20)]);
   const { bundle } = useReference();
+  const uploads = usePhotoUploadStatus();
   const boxes = harvest.reduce((s, h) => s + (h.box_count ?? 0), 0);
   const revenue = harvest.reduce((s, h) => s + (h.box_count ?? 0) * (h.price_per_box_inr ?? 0), 0);
   return (
@@ -31,13 +37,22 @@ export function FieldHomeScreen({ navigation }: ScreenProps<'Tabs'>) {
       </Row>
       <Card title="Recent scouting">
         {obs.length === 0 && <P muted>No observations yet.</P>}
-        {obs.map((o) => (
-          <P key={o.id}>
-            {fmtDate(o.observed_on)} · {bundle.pests.find((p) => p.id === o.pest_id)?.name ?? o.pest_id}
-            {o.value != null ? ` · ${o.value} ${o.metric ?? ''}` : ''}
-            {o.photos?.length ? ` · ${o.photos.length} photo(s)` : ''}
-          </P>
-        ))}
+        <PhotoUploadLine status={uploads} color={uploads.failed ? colors.warn : colors.muted} />
+        {uploads.failed > 0 && <Button title="Retry photo uploads" kind="secondary" onPress={() => void retryFailedPhotos().then(() => synchronize())} />}
+        {obs.map((o) => {
+          const photos = normalizePhotos(o.photos);
+          const local = photos.filter(isLocalUri).length;
+          return (
+            <View key={o.id}>
+              <P>
+                {fmtDate(o.observed_on)} · {bundle.pests.find((p) => p.id === o.pest_id)?.name ?? o.pest_id}
+                {o.value != null ? ` · ${o.value} ${o.metric ?? ''}` : ''}
+                {photos.length ? ` · ${photos.length} photo(s)${local ? ` (${local} not uploaded yet)` : ''}` : ''}
+              </P>
+              <PhotoThumbs photos={photos} />
+            </View>
+          );
+        })}
       </Card>
       <Card title="Harvest">
         <P muted>Recent: {boxes} boxes · ₹{revenue.toLocaleString('en-IN')}</P>
@@ -133,10 +148,12 @@ export function ScoutingFormScreen({ route, navigation }: ScreenProps<'ScoutingF
             severity: severity ?? null,
             lat: gps?.lat ?? null,
             lng: gps?.lng ?? null,
-            photos, // local URIs; uploaded separately when online (see known gaps)
+            photos, // local URIs; the background uploader swaps each for { url, mediaId } once online
             observer_user_id: user?.id,
             notes: notes || null,
           });
+          // Push the record now if online; photo uploads follow without holding the record back.
+          void synchronize();
           navigation.goBack();
         }}
       />
